@@ -1,0 +1,178 @@
+simSetSimulator "-vcssv" -exec "/tmp/rv32im-core-vcs-1060/tb_baremetal/simv" \
+           -args \
+           "-i /home/ciexpert/saulo.teipel/riscv-rv32im-core-main/sim/vcs/waves/tb_baremetal.tcl +test=boot_test +mem=/tmp/rv32im-core-software-1060/boot_test.mem" \
+           -uvmDebug on -simDelim
+debImport "-i" "-simflow" "-dbdir" \
+          "/tmp/rv32im-core-vcs-1060/tb_baremetal/simv.daidir"
+srcTBInvokeSim
+# tb_baremetal.tcl - VCS/Verdi (equivalente a sim/questa/waves/tb_baremetal.do)
+# O alvo vcs-gui exporta FSDB_FILE no ambiente antes de chamar este script.
+
+# ---------- FSDB dump ----------
+if {[info exists env(FSDB_FILE)]} {
+    fsdbDumpfile $env(FSDB_FILE)
+} else {
+    fsdbDumpfile "tb_baremetal.fsdb"
+}
+
+# Dump completo do harness e do DUT (precisamos de hierarquia para achar
+# regfile, pipeline registers, sinais de trace, etc.)
+fsdbDumpvars 0 tb_baremetal "+all"
+fsdbDumpvars 1 tb_baremetal/dut "+all"
+fsdbDumpMDA 0 tb_baremetal
+
+# ---------- Run ----------
+run
+quit
+wvCreateWindow
+verdiSetActWin -win $_nWave3
+srcHBSelect "tb_baremetal.imem" -win $_nTrace1
+verdiSetActWin -dock widgetDock_<Inst._Tree>
+srcHBSelect "tb_baremetal.dmem" -win $_nTrace1
+srcHBDrag -win $_nTrace1
+srcHBSelect "tb_baremetal.dmem" -win $_nTrace1
+srcHBSelect "tb_baremetal.dmem.master" -win $_nTrace1
+srcHBSelect "tb_baremetal.dmem.slave" -win $_nTrace1
+srcSetScope "tb_baremetal.dmem.slave" -delim "." -win $_nTrace1
+srcHBSelect "tb_baremetal.dmem.master" -win $_nTrace1
+srcSetScope "tb_baremetal.dmem.master" -delim "." -win $_nTrace1
+srcHBSelect "tb_baremetal.dmem" -win $_nTrace1
+srcHBSelect "tb_baremetal.dut.u_if_stage" -win $_nTrace1
+srcHBSelect "tb_baremetal.dut.u_hazard_unit" -win $_nTrace1
+srcHBSelect "tb_baremetal.dut.u_lsu" -win $_nTrace1
+srcHBSelect "tb_baremetal.dut.u_lsu.dmem_m" -win $_nTrace1
+srcHBSelect "tb_baremetal.dut.u_hazard_unit" -win $_nTrace1
+srcHBSelect "tb_baremetal.dut.u_id_stage.u_regfile" -win $_nTrace1
+srcHBDrag -win $_nTrace1
+wvSetPosition -win $_nWave3 {("u_regfile" 0)}
+wvRenameGroup -win $_nWave3 {G1} {u_regfile}
+wvAddSignal -win $_nWave3 "/tb_baremetal/dut/u_id_stage/u_regfile/clk_i" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/we_i" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/waddr_i\[4:0\]" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/wdata_i\[31:0\]" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/raddr1_i\[4:0\]" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/raddr2_i\[4:0\]" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/rdata1_o\[31:0\]" \
+           "/tb_baremetal/dut/u_id_stage/u_regfile/rdata2_o\[31:0\]"
+wvSetPosition -win $_nWave3 {("u_regfile" 0)}
+wvSetPosition -win $_nWave3 {("u_regfile" 8)}
+wvSetPosition -win $_nWave3 {("u_regfile" 8)}
+srcHBSelect "tb_baremetal.dut.u_id_stage.u_regfile" -win $_nTrace1
+wvSelectGroup -win $_nWave3 {u_regfile}
+verdiSetActWin -win $_nWave3
+wvCut -win $_nWave3
+wvSetPosition -win $_nWave3 {("G2" 0)}
+srcHBSelect "tb_baremetal.dut.u_id_stage.u_regfile" -win $_nTrace1
+srcSetScope "tb_baremetal.dut.u_id_stage.u_regfile" -delim "." -win $_nTrace1
+verdiSetActWin -dock widgetDock_<Inst._Tree>
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "regs" -line 17 -pos 1 -win $_nTrace1
+srcAction -pos 16 9 2 -win $_nTrace1 -name "regs" -ctrlKey off
+verdiSetActWin -dock widgetDock_MTB_SOURCE_TAB_1
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "regs" -line 17 -pos 1 -win $_nTrace1
+srcAction -pos 16 9 2 -win $_nTrace1 -name "regs" -ctrlKey off
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "regs" -line 17 -pos 1 -win $_nTrace1
+wvAddSignal -win $_nWave3 "/tb_baremetal/dut/u_id_stage/u_regfile/regs\[1:31\]"
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvExpandBus -win $_nWave3
+verdiSetActWin -win $_nWave3
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollUp -win $_nWave3 1
+wvScrollDown -win $_nWave3 0
+wvScrollDown -win $_nWave3 0
+wvScrollDown -win $_nWave3 0
+wvScrollDown -win $_nWave3 0
+srcHBSelect "tb_baremetal.dut" -win $_nTrace1
+verdiSetActWin -dock widgetDock_<Inst._Tree>
+srcHBSelect "tb_baremetal.dut" -win $_nTrace1
+srcSetScope "tb_baremetal.dut" -delim "." -win $_nTrace1
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "rst_i" -line 12 -pos 1 -win $_nTrace1
+srcAction -pos 11 5 2 -win $_nTrace1 -name "rst_i" -ctrlKey off
+verdiSetActWin -dock widgetDock_MTB_SOURCE_TAB_1
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "rst" -line 21 -pos 1 -win $_nTrace1
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvAddSignal -win $_nWave3 "/tb_baremetal/rst"
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvZoomOut -win $_nWave3
+verdiSetActWin -win $_nWave3
+wvZoomOut -win $_nWave3
+wvZoomOut -win $_nWave3
+wvZoomIn -win $_nWave3
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "clk" -line 20 -pos 1 -win $_nTrace1
+verdiSetActWin -dock widgetDock_MTB_SOURCE_TAB_1
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvSetPosition -win $_nWave3 {("G2" 2)}
+wvSetPosition -win $_nWave3 {("G2" 3)}
+wvSetPosition -win $_nWave3 {("G2" 4)}
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 2)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvAddSignal -win $_nWave3 "/tb_baremetal/clk"
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvSetPosition -win $_nWave3 {("G2" 2)}
+verdiSetActWin -win $_nWave3
+srcHBSelect "tb_baremetal.monitor_software" -win $_nTrace1
+verdiSetActWin -dock widgetDock_<Inst._Tree>
+srcHBSelect "tb_baremetal.monitor_software" -win $_nTrace1
+srcSetScope "tb_baremetal.monitor_software" -delim "." -win $_nTrace1
+srcDeselectAll -win $_nTrace1
+verdiSetActWin -dock widgetDock_MTB_SOURCE_TAB_1
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "trace_valid" -line 273 -pos 1 -win $_nTrace1
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "trace_insn" -line 82 -pos 1 -win $_nTrace1
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "trace_rd_we" -line 83 -pos 1 -win $_nTrace1
+wvSetPosition -win $_nWave3 {("G2" 4)}
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 3)}
+wvSetPosition -win $_nWave3 {("G2" 2)}
+wvAddSignal -win $_nWave3 "/tb_baremetal/trace_rd_we"
+wvSetPosition -win $_nWave3 {("G2" 2)}
+wvSetPosition -win $_nWave3 {("G2" 3)}
+srcDeselectAll -win $_nTrace1
+srcSelect -signal "trace_rd_data" -line 85 -pos 1 -win $_nTrace1
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 1)}
+wvSetPosition -win $_nWave3 {("G2" 2)}
+wvSetPosition -win $_nWave3 {("G2" 0)}
+wvSetPosition -win $_nWave3 {("G2" 3)}
+wvSetPosition -win $_nWave3 {("G2" 4)}
+wvSetPosition -win $_nWave3 {("G2" 3)}
+wvAddSignal -win $_nWave3 "/tb_baremetal/trace_rd_data\[31:0\]"
+wvSetPosition -win $_nWave3 {("G2" 3)}
+wvSetPosition -win $_nWave3 {("G2" 4)}
+wvZoomIn -win $_nWave3
+verdiSetActWin -win $_nWave3
+wvZoomIn -win $_nWave3
+debExit

@@ -1,0 +1,778 @@
+SHELL := /bin/bash
+
+VERILATOR ?= verilator
+VCS ?= vcs
+BAREMETAL_PLUSARGS ?=
+ISA_PLUSARGS ?=
+ISA_TRACE_DIR ?=
+PYTHON ?= python3.11
+CROSS_COMPILE ?= riscv32-corev-elf-
+COREMARK_CC ?= $(CROSS_COMPILE)gcc
+COREMARK_ITERATIONS ?= 0
+COREMARK_MAX_CYCLES ?= 2000000000
+COREMARK_MAX_TRACE_EVENTS ?= 2000000000
+FREERTOS_MAX_CYCLES ?= 1500000
+GENERATED_REPORT_DIR ?= build/generated-reports
+
+# RISC-V Architectural Certification Tests (ACT4). Source, generated ELFs,
+# tool caches, and RTL diagnostics stay outside the repository. The exact ACT4
+# release and commit are both checked so a moved tag cannot change sign-off.
+ACT4_VERSION ?= 4.0.0
+ACT4_COMMIT ?= a7c99303516f4e668f7488f172043392e23b9dfd
+ACT4_REPOSITORY ?= https://github.com/riscv/riscv-arch-test.git
+ACT4_ROOT ?= /tmp/rv32im-core-act4-$(shell id -u)
+ACT4_SOURCE_DIR ?= $(ACT4_ROOT)/source
+ACT4_WORK_DIR ?= $(ACT4_ROOT)/work
+ACT4_CONFIG_ALIAS ?= $(ACT4_ROOT)/config
+ACT4_ARTIFACT_DIR ?= $(ACT4_ROOT)/rtl-artifacts
+ACT4_XDG_CACHE ?= $(ACT4_ROOT)/xdg-cache
+ACT4_XDG_DATA ?= $(ACT4_ROOT)/xdg-data
+ACT4_XDG_STATE ?= $(ACT4_ROOT)/xdg-state
+ACT4_UV_CACHE ?= $(ACT4_ROOT)/uv-cache
+ACT4_EXTENSIONS ?= I,M
+ACT4_TEST ?=
+ACT4_RUN_ARGS ?=
+ACT4_ELF_DIR = $(ACT4_WORK_DIR)/rv32im-5stage/elfs
+ACT4_Z3_WHEEL = $(ACT4_ROOT)/z3_solver-4.16.0.0.whl
+ACT4_Z3_LIB = $(ACT4_XDG_CACHE)/udb/z3/z3-4.16.0/x64/libz3.so
+ACT4_Z3_URL = https://github.com/Z3Prover/z3/releases/download/z3-4.16.0/z3_solver-4.16.0.0-py3-none-manylinux_2_27_x86_64.whl
+ACT4_Z3_SHA256 = afae2551f795670f0522cfce82132d129c408a2694adff71eb01ba0f2ece44f9
+
+# Synopsys VCS is an interactive debug companion to the Verilator regression.
+# Keep its generated binary outside the repository, just as the Verilator flow does.
+# TEST selects one top-level testbench whose *_SRCS list is defined below.
+REPO_ROOT := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))
+VCS_BUILD_DIR ?= /tmp/rv32im-core-vcs-$(shell id -u)
+TEST ?= tb_rv32_core
+PROGRAM ?= smoke
+ISA_TEST ?= rv32ui-add
+VCS_PLUSARGS ?=
+# VERDI_HOME normally comes from the environment; fall back to deriving it
+# from the `verdi` binary. When the PLI is present we link it so the UCLI
+# scripts can call $fsdbDumpfile / $fsdbDumpvars.
+VERDI_HOME    ?= $(shell v=$$(command -v verdi 2>/dev/null); [ -n "$$v" ] && dirname $$(dirname $$v))
+VCS_FLAGS     ?= -sverilog -full64 -assert enable_diag -timescale=1ns/1ps \
+                 -debug_access+all -kdb
+# Verilator's generated GNU Make flow cannot build below a path containing
+# spaces. Keep generated models in a deterministic per-user temporary path so
+# this repository works from paths such as "New Volume" as well as in CI.
+BUILD_DIR := /tmp/rv32im-core-verilator-$(shell id -u)
+SOFTWARE_BUILD_DIR := /tmp/rv32im-core-software-$(shell id -u)
+ISA_BUILD_DIR := /tmp/rv32im-core-isa-$(shell id -u)
+
+# Keep simulation builds strict. TIMESCALEMOD is waived because synthesizable
+# RTL intentionally has no simulation time units; every timing testbench does.
+# UNUSEDPARAM is expected when a unit test imports only part of rv32_pkg.
+# UNUSEDSIGNAL/PINCONNECTEMPTY cover intentionally ignored instruction,
+# bundle, and diagnostic fields. BLKSEQ permits immediate testbench scoreboard
+# bookkeeping in clocked monitors. Synthesizable RTL is checked separately by
+# the stricter lint target below.
+VERILATOR_TEST_FLAGS := \
+	--binary \
+	--timing \
+	--assert \
+	-Wall \
+	-Wno-TIMESCALEMOD \
+	-Wno-UNUSEDPARAM \
+	-Wno-UNUSEDSIGNAL \
+	-Wno-PINCONNECTEMPTY \
+	-Wno-BLKSEQ
+
+# These lint waivers are structural at the standalone core boundary:
+# - intentionally unused debug/aggregate outputs are left open;
+# - the memory interface is only half-driven until a memory slave is attached;
+# - packed pipeline bundles are intentionally consumed field-by-field.
+VERILATOR_LINT_FLAGS := \
+	--lint-only \
+	-Wall \
+	-Wno-PINCONNECTEMPTY \
+	-Wno-UNUSEDSIGNAL \
+	-Wno-UNDRIVEN
+
+CORE_MANIFEST := files/core.f
+CORE_SOURCES := $(shell sed -e '/^[[:space:]]*\#/d' -e '/^[[:space:]]*$$/d' $(CORE_MANIFEST))
+ASSERTION_SOURCES := \
+# 	tb/assertions/rv32_mem_protocol_sva.sv \
+# 	tb/assertions/rv32_core_retirement_sva.sv \
+# 	tb/assertions/rv32_core_interrupt_sva.sv \
+# 	tb/assertions/rv32_core_bind.sv
+TCM_SOURCES := $(CORE_SOURCES) rtl/soc/rv32_tcm.sv
+SOC_SOURCES := \
+	$(TCM_SOURCES) \
+	rtl/soc/rv32_mtimer.sv \
+	rtl/soc/rv32_uart.sv \
+	rtl/soc/rv32_gpio.sv \
+	rtl/soc/rv32_mem_demux.sv \
+	rtl/soc/soc_tcm_top.sv
+
+UNIT_TESTS := \
+	tb_alu \
+	tb_imm_gen \
+	tb_decoder \
+	tb_branch_unit \
+	tb_regfile \
+	tb_reset_sync \
+	tb_rv32_tcm \
+	tb_rv32_mtimer \
+	tb_rv32_uart \
+	tb_rv32_gpio \
+	tb_rv32_mem_demux \
+	tb_lsu \
+	tb_if_stage \
+	tb_id_stage \
+	tb_forwarding_unit \
+	tb_hazard_unit \
+	tb_mul_unit \
+	tb_div_unit \
+	tb_ex_stage \
+	tb_pipeline_ctrl \
+	tb_csr
+
+GATE4_TESTS := \
+	tb_pipeline_forwarding \
+	tb_pipeline_memory_wait \
+	tb_core_control_flow
+
+ASSERTION_TESTS := \
+	tb_pipeline_memory_wait \
+	tb_core_control_flow \
+	tb_timer_interrupt_core
+
+INTEGRATION_TESTS := \
+	tb_rv32_core \
+	tb_csr_core \
+	tb_timer_interrupt_core \
+	tb_soc_tcm_top \
+	$(GATE4_TESTS)
+
+FPGA_TESTS := tb_reset_sync tb_soc_tcm_top
+
+ALL_TESTS := $(UNIT_TESTS) $(INTEGRATION_TESTS)
+SOFTWARE_INTEGRATION_TESTS := tb_freertos_soc
+TOTAL_RTL_TESTS := $(ALL_TESTS) $(SOFTWARE_INTEGRATION_TESTS)
+
+# Curated waveform portfolio aligned with Gates 2-5 of the architecture plan.
+# Bare-metal/ISA images use dedicated targets because they need runtime images.
+VCS_CURATED_TESTS := \
+    tb_alu \
+    tb_branch_unit \
+    tb_timer_interrupt_core \
+    tb_rv32_core \
+    #tb_csr_core \
+    #tb_soc_tcm_top
+
+-include sw/tests/programs.mk
+-include sw/isa/tests.mk
+
+BAREMETAL_TARGETS := $(addprefix baremetal-,$(BAREMETAL_PROGRAMS))
+ISA_RV32UI_TARGETS := $(addprefix isa-rv32ui-,$(RV32UI_TESTS))
+ISA_RV32UM_TARGETS := $(addprefix isa-rv32um-,$(RV32UM_TESTS))
+ISA_TARGETS := $(ISA_RV32UI_TARGETS) $(ISA_RV32UM_TARGETS)
+ISA_PROGRAMS := \
+	$(addprefix rv32ui-,$(RV32UI_TESTS)) \
+	$(addprefix rv32um-,$(RV32UM_TESTS))
+
+# Inputs used by the delegated ISA image rules below. Listing them here makes
+# the root build notice changes even when an image already exists in /tmp;
+# the sw/isa Makefile remains responsible for the actual incremental rebuild.
+ISA_IMAGE_COMMON_DEPS := \
+	sw/isa/Makefile \
+	sw/isa/tests.mk \
+	sw/isa/link.ld \
+	sw/isa/env/riscv_test.h \
+	third_party/riscv-tests/isa/macros/scalar/test_macros.h \
+	tools/bin_to_memh.py
+
+tb_alu_SRCS := rtl/core/rv32_pkg.sv rtl/core/alu.sv tb/unit/tb_alu.sv
+tb_imm_gen_SRCS := rtl/core/rv32_pkg.sv rtl/core/imm_gen.sv tb/unit/tb_imm_gen.sv
+tb_decoder_SRCS := rtl/core/rv32_pkg.sv rtl/core/decoder.sv tb/unit/tb_decoder.sv
+tb_branch_unit_SRCS := rtl/core/rv32_pkg.sv rtl/core/branch_unit.sv tb/unit/tb_branch_unit.sv
+tb_regfile_SRCS := rtl/core/regfile.sv tb/unit/tb_regfile.sv
+tb_reset_sync_SRCS := rtl/fpga/reset_sync.sv tb/unit/tb_reset_sync.sv
+tb_rv32_tcm_SRCS := rtl/core/rv32_mem_if.sv rtl/soc/rv32_tcm.sv tb/unit/tb_rv32_tcm.sv
+tb_rv32_mtimer_SRCS := rtl/core/rv32_mem_if.sv rtl/soc/rv32_mtimer.sv tb/unit/tb_rv32_mtimer.sv
+tb_rv32_uart_SRCS := rtl/core/rv32_mem_if.sv rtl/soc/rv32_uart.sv tb/unit/tb_rv32_uart.sv
+tb_rv32_gpio_SRCS := rtl/core/rv32_mem_if.sv rtl/soc/rv32_gpio.sv tb/unit/tb_rv32_gpio.sv
+tb_rv32_mem_demux_SRCS := rtl/core/rv32_mem_if.sv rtl/soc/rv32_mem_demux.sv tb/unit/tb_rv32_mem_demux.sv
+tb_lsu_SRCS := rtl/core/rv32_pkg.sv rtl/core/rv32_mem_if.sv rtl/core/lsu.sv tb/unit/tb_lsu.sv
+tb_if_stage_SRCS := rtl/core/rv32_pkg.sv rtl/core/rv32_mem_if.sv rtl/core/if_stage.sv tb/unit/tb_if_stage.sv
+tb_id_stage_SRCS := \
+	rtl/core/rv32_pkg.sv \
+	rtl/core/imm_gen.sv \
+	rtl/core/decoder.sv \
+	rtl/core/regfile.sv \
+	rtl/core/id_stage.sv \
+	tb/unit/tb_id_stage.sv
+tb_forwarding_unit_SRCS := rtl/core/rv32_pkg.sv rtl/core/forwarding_unit.sv tb/unit/tb_forwarding_unit.sv
+tb_hazard_unit_SRCS := rtl/core/rv32_pkg.sv rtl/core/hazard_unit.sv tb/unit/tb_hazard_unit.sv
+tb_mul_unit_SRCS := rtl/core/rv32_pkg.sv rtl/core/mul_unit.sv tb/unit/tb_mul_unit.sv
+tb_div_unit_SRCS := rtl/core/rv32_pkg.sv rtl/core/div_unit.sv tb/unit/tb_div_unit.sv
+tb_ex_stage_SRCS := \
+	rtl/core/rv32_pkg.sv \
+	rtl/core/alu.sv \
+	rtl/core/branch_unit.sv \
+	rtl/core/mul_unit.sv \
+	rtl/core/div_unit.sv \
+	rtl/core/ex_stage.sv \
+	tb/unit/tb_ex_stage.sv
+tb_pipeline_ctrl_SRCS := rtl/core/rv32_pkg.sv rtl/core/pipeline_ctrl.sv tb/unit/tb_pipeline_ctrl.sv
+tb_csr_SRCS := rtl/core/rv32_pkg.sv rtl/core/csr_file.sv tb/unit/tb_csr.sv
+tb_rv32_core_SRCS := $(TCM_SOURCES) $(ASSERTION_SOURCES) tb/integration/tb_rv32_core.sv
+tb_csr_core_SRCS := $(TCM_SOURCES) $(ASSERTION_SOURCES) tb/integration/tb_csr_core.sv
+tb_timer_interrupt_core_SRCS := \
+	$(TCM_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/integration/tb_timer_interrupt_core.sv
+tb_soc_tcm_top_SRCS := \
+	$(SOC_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/integration/tb_soc_tcm_top.sv
+tb_pipeline_forwarding_SRCS := \
+	$(TCM_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/common/rv32_tb_pkg.sv \
+	tb/integration/tb_pipeline_forwarding.sv
+tb_pipeline_memory_wait_SRCS := \
+	$(CORE_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/common/rv32_tb_pkg.sv \
+	tb/rv32_delayed_mem.sv \
+	tb/integration/tb_pipeline_memory_wait.sv
+tb_core_control_flow_SRCS := \
+	$(TCM_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/common/rv32_tb_pkg.sv \
+	tb/integration/tb_core_control_flow.sv
+tb_baremetal_SRCS := \
+	$(TCM_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/integration/tb_baremetal.sv
+tb_bootloader_SRCS := \
+	$(SOC_SOURCES) \
+	tb/integration/tb_bootloader.sv
+tb_freertos_soc_SRCS := \
+	$(SOC_SOURCES) \
+	$(ASSERTION_SOURCES) \
+	tb/integration/tb_freertos_soc.sv
+
+# Every integration build expands CORE_SOURCES at parse time. Preserve the
+# manifest itself as a dependency so source removal or reordering also causes
+# cached Verilator models to be rebuilt, not only source timestamp changes.
+$(foreach test,$(ALL_TESTS),$(eval $(test)_BUILD_DEPS :=))
+$(foreach test,$(INTEGRATION_TESTS),$(eval $(test)_BUILD_DEPS := $(CORE_MANIFEST)))
+
+BAREMETAL_SIM := $(BUILD_DIR)/tb_baremetal/Vtb_baremetal
+FREERTOS_SIM := $(BUILD_DIR)/tb_freertos_soc/Vtb_freertos_soc
+ACT4_SIM := $(BUILD_DIR)/tb_baremetal_act4/Vtb_baremetal_act4
+
+.DEFAULT_GOAL := test
+
+.PHONY: all test rtl-check-tools lint unit integration gate4 assertions fpga baremetal software-images \
+	bootloader-images vcs-bootloader \
+	freertos freertos-images fpga-freertos-images \
+	benchmark benchmark-images coremark coremark-images \
+	isa isa-images isa-rv32ui-arithmetic isa-rv32ui-control \
+	isa-rv32ui-memory isa-rv32ui isa-rv32um-multiply isa-rv32um-divide isa-rv32um \
+	vcs-list vcs-compile vcs-run vcs-gui vcs-verdi vcs-check \
+	vcs-baremetal-run vcs-baremetal-gui \
+	vcs-freertos-run vcs-freertos-gui \
+	vcs-isa-run vcs-isa-gui vcs-clean \
+	act4 act4-check-tools act4-fetch act4-config act4-z3 act4-generate \
+	act4-sim act4-run act4-test act4-clean \
+	list help clean $(ALL_TESTS) $(SOFTWARE_INTEGRATION_TESTS) $(BAREMETAL_TARGETS) $(ISA_TARGETS)
+
+all: test
+
+test: lint unit integration baremetal freertos isa
+	@echo "[PASS] RTL lint, $(words $(TOTAL_RTL_TESTS)) RTL simulations (including FreeRTOS SoC bring-up), $(words $(BAREMETAL_PROGRAMS)) bare-metal programs, and $(words $(ISA_PROGRAMS)) ISA tests completed"
+
+rtl-check-tools:
+	@command -v $(VERILATOR) >/dev/null 2>&1 || { \
+		echo "error: '$(VERILATOR)' was not found in PATH" >&2; \
+		exit 127; \
+	}
+
+lint: rtl-check-tools
+	@echo "[LINT] rv32_core"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module rv32_core -f $(CORE_MANIFEST)
+	@echo "[LINT] rv32_tcm"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module rv32_tcm \
+		rtl/core/rv32_mem_if.sv rtl/soc/rv32_tcm.sv
+	@echo "[LINT] rv32_mtimer"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module rv32_mtimer \
+		rtl/core/rv32_mem_if.sv rtl/soc/rv32_mtimer.sv
+	@echo "[LINT] rv32_uart"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module rv32_uart \
+		rtl/core/rv32_mem_if.sv rtl/soc/rv32_uart.sv
+	@echo "[LINT] rv32_gpio"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module rv32_gpio \
+		rtl/core/rv32_mem_if.sv rtl/soc/rv32_gpio.sv
+	@echo "[LINT] rv32_mem_demux"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module rv32_mem_demux \
+		rtl/core/rv32_mem_if.sv rtl/soc/rv32_mem_demux.sv
+	@echo "[LINT] soc_tcm_top"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module soc_tcm_top \
+		$(SOC_SOURCES)
+	@echo "[LINT] reset_sync"
+	@$(VERILATOR) $(VERILATOR_LINT_FLAGS) --top-module reset_sync \
+		rtl/fpga/reset_sync.sv
+
+unit: $(UNIT_TESTS)
+	@echo "[PASS] $(words $(UNIT_TESTS)) unit tests completed"
+
+integration: $(INTEGRATION_TESTS)
+	@echo "[PASS] $(words $(INTEGRATION_TESTS)) integration tests completed"
+
+gate4: $(GATE4_TESTS)
+	@echo "[PASS] Gate 4 forwarding, wait-state, control, and precise-squash tests completed"
+
+assertions: $(ASSERTION_TESTS)
+	@echo "[PASS] concurrent protocol, retirement, and precise-interrupt assertions completed"
+
+fpga: $(FPGA_TESTS)
+	@echo "[PASS] FPGA-support reset and SoC/TCM simulations completed"
+
+software-images:
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) baremetal-images
+
+bootloader-images:
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) bootloader-images
+
+freertos-images:
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) freertos-images
+
+# Human-observable board image. Keep it separate from the bounded 2 ms
+# simulation image so the release payload cannot silently reuse test firmware.
+fpga-freertos-images:
+	@$(MAKE) -B -C sw BUILD_DIR=../build/fpga-freertos \
+		FREERTOS_CPU_CLOCK_HZ=75000000 \
+		FREERTOS_BLINK_PERIOD_MS=250 freertos-images
+
+freertos: freertos-images $(FREERTOS_SIM)
+	@echo "[RUN]   freertos-demo"
+	@$(FREERTOS_SIM) \
+		+mem=$(SOFTWARE_BUILD_DIR)/freertos_demo.mem \
+		+max_cycles=$(FREERTOS_MAX_CYCLES)
+
+tb_freertos_soc: freertos
+
+baremetal: $(BAREMETAL_TARGETS)
+	@echo "[PASS] $(words $(BAREMETAL_PROGRAMS)) bare-metal software tests completed"
+
+benchmark-images:
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) \
+		$(addprefix $(SOFTWARE_BUILD_DIR)/,$(addsuffix .mem,$(BENCHMARK_PROGRAMS)))
+
+benchmark: benchmark-images $(BAREMETAL_SIM)
+	@$(PYTHON) tools/run_benchmarks.py \
+		--sim "$(BAREMETAL_SIM)" \
+		--image-dir "$(SOFTWARE_BUILD_DIR)" \
+		--output "$(GENERATED_REPORT_DIR)/performance.md"
+
+coremark-images:
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) \
+		COREMARK_ITERATIONS=$(COREMARK_ITERATIONS) coremark-images
+
+coremark: coremark-images $(BAREMETAL_SIM)
+	@$(PYTHON) tools/run_coremark.py \
+		--sim "$(BAREMETAL_SIM)" \
+		--image-dir "$(SOFTWARE_BUILD_DIR)" \
+		--compiler "$(COREMARK_CC)" \
+		--max-cycles $(COREMARK_MAX_CYCLES) \
+		--max-trace-events $(COREMARK_MAX_TRACE_EVENTS) \
+		--output "$(GENERATED_REPORT_DIR)/coremark.md"
+
+isa-images:
+	@$(MAKE) -C sw/isa BUILD_DIR=$(ISA_BUILD_DIR) all
+
+isa-rv32ui-arithmetic: $(addprefix isa-rv32ui-,$(RV32UI_ARITH_TESTS))
+	@echo "[PASS] Gate 6 RV32I arithmetic/logic group completed"
+
+isa-rv32ui-control: $(addprefix isa-rv32ui-,$(RV32UI_CONTROL_TESTS))
+	@echo "[PASS] Gate 6 RV32I branch/jump group completed"
+
+isa-rv32ui-memory: $(addprefix isa-rv32ui-,$(RV32UI_MEMORY_TESTS))
+	@echo "[PASS] Gate 6 RV32I load/store group completed"
+
+isa-rv32ui: $(ISA_RV32UI_TARGETS)
+	@echo "[PASS] all $(words $(RV32UI_TESTS)) in-scope rv32ui programs completed"
+
+isa-rv32um-multiply: $(addprefix isa-rv32um-,$(RV32UM_MUL_TESTS))
+	@echo "[PASS] Gate 6 RV32M multiply group completed"
+
+isa-rv32um-divide: $(addprefix isa-rv32um-,$(RV32UM_DIV_TESTS))
+	@echo "[PASS] Gate 6 RV32M divide/remainder group completed"
+
+isa-rv32um: $(ISA_RV32UM_TARGETS)
+	@echo "[PASS] all $(words $(RV32UM_TESTS)) rv32um programs completed"
+
+isa: isa-rv32ui isa-rv32um
+	@echo "[PASS] Gate 6 ISA regression: $(words $(ISA_PROGRAMS)) independent programs completed"
+
+list:
+	@printf '%s\n' $(TOTAL_RTL_TESTS) $(BAREMETAL_TARGETS) $(ISA_TARGETS)
+
+help:
+	@echo "RV32IM RTL regression targets"
+	@echo "  make test          Run lint and every RTL/software/ISA regression"
+	@echo "  make lint          Lint the core, TCM, SoC, reset, and FPGA top"
+	@echo "  make unit          Run all unit tests"
+	@echo "  make integration   Run all core integration tests"
+	@echo "  make gate4         Run the Gate 4 directed acceptance suite"
+	@echo "  make assertions    Run concurrent protocol/retirement SVA stress tests"
+	@echo "  make fpga          Run reset and SoC/TCM deployment-support tests"
+	@echo "  make baremetal     Build and run all freestanding software tests"
+	@echo "  make freertos      Build and run the blink + UART echo FreeRTOS SoC demo"
+	@echo "  make fpga-freertos-images  Build the 75 MHz, 250 ms-blink FPGA FreeRTOS image"
+	@echo "  make benchmark     Run four CPI/IPC microbenchmarks and write build/generated-reports/performance.md"
+	@echo "  make coremark      Run standard 2K performance/validation seeds and write build/generated-reports/coremark.md"
+	@echo "  make baremetal-X   Build and run one software test (smoke or trap)"
+	@echo "  make isa           Run the complete Gate 6 RV32I/RV32M ISA suite"
+	@echo "  make isa-rv32ui    Run all in-scope upstream rv32ui tests"
+	@echo "  make isa-rv32um    Run all upstream rv32um tests"
+	@echo "  make isa-rv32ui-add  Build and run one ISA test"
+	@echo "  make act4          Generate and run all 47 ACT4 4.0.0 I/M tests"
+	@echo "  make act4-test ACT4_TEST=I-add  Run matching ACT4 test(s)"
+	@echo "  make <test-name>   Run one test, for example: make tb_div_unit"
+	@echo "  make vcs-list         List curated VCS testbenches"
+	@echo "  make vcs-run TEST=tb_rv32_core  Compile and run one test in batch mode"
+	@echo "  make vcs-check        Run the curated VCS portfolio in batch mode"
+	@echo "  make vcs-baremetal-run PROGRAM=smoke  Run one bare-metal image"
+	@echo "  make vcs-freertos-run Debug the FreeRTOS SoC demo"
+	@echo "  make vcs-isa-run ISA_TEST=rv32ui-add  Run one ISA image"
+	@echo "  make list          List every available simulation test"
+	@echo "  make clean         Remove local Verilator, software, ISA, VCS, and ACT4 results"
+	@echo ""
+	@echo "Parallel example: make -j$$(nproc) test"
+
+clean: vcs-clean act4-clean
+	@$(RM) -r $(BUILD_DIR) $(SOFTWARE_BUILD_DIR) $(ISA_BUILD_DIR)
+
+# ---------------------------------------------------------------------------
+# ACT4 architectural-test flow
+# ---------------------------------------------------------------------------
+# ACT4 4.0.0's CONFIG_FILES interface is whitespace-separated. A temporary
+# symlink gives the DUT config a space-free path even when this checkout lives
+# below a directory such as "New Volume".
+act4-check-tools:
+	@for tool in git curl unzip sha256sum mise riscv64-unknown-elf-gcc \
+		riscv64-unknown-elf-objdump sail_riscv_sim $(PYTHON) $(VERILATOR); do \
+		command -v $$tool >/dev/null 2>&1 || { \
+			echo "error: ACT4 prerequisite '$$tool' was not found in PATH" >&2; \
+			exit 127; \
+		}; \
+	done
+	@case "$$(uname -s)/$$(uname -m)" in \
+		Linux/x86_64) ;; \
+		*) echo "error: the pinned ACT4 Z3 bootstrap currently supports Linux/x86_64" >&2; exit 2 ;; \
+	esac
+	@riscv64-unknown-elf-gcc -dumpmachine \
+		| grep -Eq '^(riscv64-unknown-elf|riscv-none-elf)$$' || { \
+		echo "error: unexpected RISC-V bare-metal compiler target" >&2; exit 2; \
+	}
+	@sail_riscv_sim --version 2>&1 | grep -q '0\.10' || { \
+		echo "error: ACT4 $(ACT4_VERSION) requires sail-riscv 0.10" >&2; exit 2; \
+	}
+
+act4-fetch: act4-check-tools
+	@mkdir -p "$(ACT4_ROOT)" "$(ACT4_XDG_CACHE)" \
+		"$(ACT4_XDG_DATA)" "$(ACT4_XDG_STATE)"
+	@if [ ! -d "$(ACT4_SOURCE_DIR)/.git" ]; then \
+		echo "[ACT4 FETCH] release $(ACT4_VERSION)"; \
+		git clone --depth 1 --branch "$(ACT4_VERSION)" \
+			"$(ACT4_REPOSITORY)" "$(ACT4_SOURCE_DIR)"; \
+	fi
+	@actual=$$(git -C "$(ACT4_SOURCE_DIR)" rev-parse HEAD); \
+	if [ "$$actual" != "$(ACT4_COMMIT)" ]; then \
+		echo "error: ACT4 source commit $$actual does not match pinned $(ACT4_COMMIT)" >&2; \
+		exit 2; \
+	fi
+	@XDG_CACHE_HOME="$(ACT4_XDG_CACHE)" \
+		XDG_DATA_HOME="$(ACT4_XDG_DATA)" \
+		XDG_STATE_HOME="$(ACT4_XDG_STATE)" \
+		mise trust "$(ACT4_SOURCE_DIR)/.mise.toml" >/dev/null
+
+act4-config:
+	@mkdir -p "$(ACT4_ROOT)"
+	@if [ -e "$(ACT4_CONFIG_ALIAS)" ] && [ ! -L "$(ACT4_CONFIG_ALIAS)" ]; then \
+		echo "error: refusing to replace non-symlink $(ACT4_CONFIG_ALIAS)" >&2; exit 2; \
+	fi
+	@ln -sfn "$(REPO_ROOT)/verification/act4/config" "$(ACT4_CONFIG_ALIAS)"
+
+$(ACT4_Z3_LIB): | act4-check-tools
+	@mkdir -p "$(@D)" "$(ACT4_ROOT)"
+	@echo "[ACT4 FETCH] Z3 4.16.0 runtime"
+	@curl -fL --retry 3 "$(ACT4_Z3_URL)" -o "$(ACT4_Z3_WHEEL).tmp"
+	@echo "$(ACT4_Z3_SHA256)  $(ACT4_Z3_WHEEL).tmp" | sha256sum -c -
+	@mv "$(ACT4_Z3_WHEEL).tmp" "$(ACT4_Z3_WHEEL)"
+	@unzip -p "$(ACT4_Z3_WHEEL)" z3/lib/libz3.so > "$@.tmp"
+	@mv "$@.tmp" "$@"
+
+act4-z3: $(ACT4_Z3_LIB)
+
+act4-generate: act4-fetch act4-config act4-z3
+	@mkdir -p "$(ACT4_WORK_DIR)" "$(ACT4_XDG_DATA)" \
+		"$(ACT4_XDG_STATE)" "$(ACT4_UV_CACHE)"
+	@echo "[ACT4 GENERATE] extensions $(ACT4_EXTENSIONS)"
+	+@XDG_CACHE_HOME="$(ACT4_XDG_CACHE)" \
+		XDG_DATA_HOME="$(ACT4_XDG_DATA)" \
+		XDG_STATE_HOME="$(ACT4_XDG_STATE)" \
+		UV_CACHE_DIR="$(ACT4_UV_CACHE)" \
+		$(MAKE) -C "$(ACT4_SOURCE_DIR)" \
+		CONFIG_FILES="$(ACT4_CONFIG_ALIAS)/test_config.yaml" \
+		WORKDIR="$(ACT4_WORK_DIR)" EXTENSIONS="$(ACT4_EXTENSIONS)"
+	@count=$$(find "$(ACT4_ELF_DIR)" -type f -name '*.elf' | wc -l); \
+	if [ "$$count" -ne 47 ]; then \
+		echo "error: ACT4 $(ACT4_VERSION) I/M generation produced $$count ELFs, expected 47" >&2; \
+		exit 2; \
+	fi
+	@echo "[PASS] ACT4 generated 47 self-checking I/M ELFs"
+
+$(ACT4_SIM): $(tb_baremetal_SRCS) $(CORE_MANIFEST) Makefile | rtl-check-tools
+	@mkdir -p $(@D)
+	@echo "[BUILD] tb_baremetal ACT4 (1 MiB TCM)"
+	+@$(VERILATOR) $(VERILATOR_TEST_FLAGS) \
+		--top-module tb_baremetal \
+		-GTCM_BYTES=1048576 \
+		--Mdir $(@D) \
+		-o Vtb_baremetal_act4 \
+		$(tb_baremetal_SRCS)
+
+act4-sim: $(ACT4_SIM)
+
+act4-run: act4-generate act4-sim
+	@$(PYTHON) verification/act4/run.py \
+		--sim "$(ACT4_SIM)" \
+		--elf-dir "$(ACT4_ELF_DIR)" \
+		--artifact-dir "$(ACT4_ARTIFACT_DIR)" \
+		$(ACT4_RUN_ARGS)
+
+act4: act4-run
+	@echo "[PASS] ACT4 $(ACT4_VERSION) architectural regression: 47/47 RV32I/RV32M tests"
+
+act4-test: act4-generate act4-sim
+	@test -n "$(strip $(ACT4_TEST))" || { \
+		echo "error: set ACT4_TEST to a basename, substring, or glob" >&2; exit 2; \
+	}
+	@$(PYTHON) verification/act4/run.py \
+		--sim "$(ACT4_SIM)" \
+		--elf-dir "$(ACT4_ELF_DIR)" \
+		--artifact-dir "$(ACT4_ARTIFACT_DIR)" \
+		--test "$(ACT4_TEST)" \
+		$(ACT4_RUN_ARGS)
+
+act4-clean:
+	@$(RM) -r "$(ACT4_WORK_DIR)" "$(ACT4_ARTIFACT_DIR)" \
+		"$(BUILD_DIR)/tb_baremetal_act4"
+# ---------------------------------------------------------------------------
+# Synopsys VCS simulation flow
+# ---------------------------------------------------------------------------
+VCS_TEST_SRCS   = $($(TEST)_SRCS)
+VCS_TEST_DIR    = $(VCS_BUILD_DIR)/$(TEST)
+VCS_SIMV        = $(VCS_TEST_DIR)/simv
+VCS_WAVE_DIR   := $(REPO_ROOT)/sim/vcs/waves
+VCS_WAVE_TCL   := $(VCS_WAVE_DIR)/$(TEST).tcl
+VCS_BATCH_TCL  := $(REPO_ROOT)/sim/vcs/run_batch.tcl
+VCS_TRANSCRIPT := $(VCS_TEST_DIR)/transcript.log
+VCS_VCD        := $(VCS_TEST_DIR)/sim.vcd
+VCS_FSDB       := $(VCS_TEST_DIR)/$(TEST).fsdb
+
+vcs-list:
+	@printf '%s\n' $(VCS_CURATED_TESTS)
+	@echo "tb_baremetal (use vcs-baremetal-run ou vcs-baremetal-gui)"
+	@echo "tb_freertos_soc (use vcs-freertos-run ou vcs-freertos-gui)"
+
+vcs-compile:
+	@command -v $(VCS) >/dev/null 2>&1 || { \
+		echo "error: '$(VCS)' was not found in PATH" >&2; exit 127; \
+	}
+	@test -n "$(strip $(VCS_TEST_SRCS))" || { \
+		echo "error: unknown TEST='$(TEST)' or no $(TEST)_SRCS list" >&2; \
+		echo "hint: run 'make vcs-list'" >&2; exit 2; \
+	}
+	@mkdir -p "$(VCS_TEST_DIR)"
+	@echo "[VCS BUILD] $(TEST)"
+	@cd "$(REPO_ROOT)" && $(VCS) $(VCS_FLAGS) \
+		-top $(TEST) \
+		$(foreach src,$(VCS_TEST_SRCS),$(src)) \
+		-Mdir="$(VCS_TEST_DIR)/csrc" \
+		-o "$(VCS_SIMV)"
+
+vcs-run: vcs-compile
+	@test -f "$(VCS_BATCH_TCL)" || { \
+		echo "error: missing $(VCS_BATCH_TCL)" >&2; exit 2; \
+	}
+	@echo "[VCS RUN]   $(TEST)"
+	@cd "$(REPO_ROOT)" && \
+		VCS_DUMP_FILE="$(VCS_VCD)" \
+		"$(VCS_SIMV)" \
+			-ucli -i "$(VCS_BATCH_TCL)" \
+			-l  "$(VCS_TRANSCRIPT)" \
+			$(VCS_PLUSARGS)
+	@test -s "$(VCS_TRANSCRIPT)" || { \
+		echo "error: VCS produced no transcript for $(TEST)" >&2; exit 1; \
+	}
+	@grep -Eiq '(PASS|SUCCESS|\$finish)' "$(VCS_TRANSCRIPT)" || { \
+		echo "error: VCS transcript has no PASS for $(TEST)" >&2; \
+		tail -n 40 "$(VCS_TRANSCRIPT)" >&2; exit 1; \
+	}
+
+vcs-gui: vcs-compile
+	@test -f "$(VCS_WAVE_TCL)" || { \
+		echo "error: no curated waveform file for TEST='$(TEST)'" >&2; \
+		echo "expected: $(VCS_WAVE_TCL)" >&2; \
+		echo "hint: crie o .tcl ou use 'vcs-run' (batch)" >&2; exit 2; \
+	}
+	@echo "[VCS GUI]   $(TEST)   (FSDB: $(VCS_FSDB))"
+	@cd "$(REPO_ROOT)" && FSDB_FILE="$(VCS_FSDB)" \
+		"$(VCS_SIMV)" -gui=verdi \
+		-ucli -i "$(VCS_WAVE_TCL)" \
+		$(VCS_PLUSARGS)
+
+# Debug pos-simulacao via KDB (usa o -kdb do VCS_FLAGS) - nao precisa de VCD
+vcs-verdi: vcs-compile
+	@command -v verdi >/dev/null 2>&1 || { \
+		echo "error: 'verdi' was not found in PATH" >&2; exit 127; \
+	}
+	@test -d "$(VCS_TEST_DIR)/simv.daidir/kdb" || { \
+		echo "error: KDB missing for $(TEST) (compile com -kdb)" >&2; \
+		exit 2; \
+	}
+	@echo "[VCS VERDI] $(TEST)"
+	@cd "$(REPO_ROOT)" && verdi -dbdir "$(VCS_TEST_DIR)/simv.daidir/kdb" -sv &
+
+vcs-check:
+	@set -e; for test in $(VCS_CURATED_TESTS); do \
+		$(MAKE) --no-print-directory vcs-run TEST=$$test; \
+	done
+	@echo "[PASS] $(words $(VCS_CURATED_TESTS)) curated VCS tests completed"
+
+vcs-baremetal-run: software-images
+	@case " $(BAREMETAL_PROGRAMS) " in \
+		*" $(PROGRAM) "*) ;; \
+		*) echo "error: unknown PROGRAM='$(PROGRAM)'; choices: $(BAREMETAL_PROGRAMS)" >&2; exit 2 ;; \
+	esac
+	@$(MAKE) --no-print-directory vcs-run \
+		TEST=tb_baremetal \
+		VCS_PLUSARGS="+test=$(PROGRAM) +mem=$(SOFTWARE_BUILD_DIR)/$(PROGRAM).mem"
+
+vcs-baremetal-gui: software-images
+	@case " $(BAREMETAL_PROGRAMS) " in \
+		*" $(PROGRAM) "*) ;; \
+		*) echo "error: unknown PROGRAM='$(PROGRAM)'; choices: $(BAREMETAL_PROGRAMS)" >&2; exit 2 ;; \
+	esac
+	@$(MAKE) --no-print-directory vcs-gui \
+		TEST=tb_baremetal \
+		VCS_PLUSARGS="+test=$(PROGRAM) +mem=$(SOFTWARE_BUILD_DIR)/$(PROGRAM).mem"
+
+vcs-bootloader: bootloader-images
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) minimal-app-images
+	@$(MAKE) --no-print-directory vcs-run \
+		TEST=tb_bootloader \
+		VCS_PLUSARGS="+BOOTLOADER_MEM=$(SOFTWARE_BUILD_DIR)/bootloader.mem +APP_CODE_MEM=$(SOFTWARE_BUILD_DIR)/minimal_app.mem"
+
+vcs-freertos-run: freertos-images
+	@$(MAKE) --no-print-directory vcs-run \
+		TEST=tb_freertos_soc \
+		VCS_PLUSARGS="+mem=$(SOFTWARE_BUILD_DIR)/freertos_demo.mem +max_cycles=$(FREERTOS_MAX_CYCLES)"
+
+vcs-freertos-gui: freertos-images
+	@$(MAKE) --no-print-directory vcs-gui \
+		TEST=tb_freertos_soc \
+		VCS_PLUSARGS="+mem=$(SOFTWARE_BUILD_DIR)/freertos_demo.mem +max_cycles=$(FREERTOS_MAX_CYCLES)"
+
+vcs-isa-run:
+	@case " $(ISA_PROGRAMS) " in \
+		*" $(ISA_TEST) "*) ;; \
+		*) echo "error: unknown ISA_TEST='$(ISA_TEST)'" >&2; exit 2 ;; \
+	esac
+	@$(MAKE) -C sw/isa BUILD_DIR=$(ISA_BUILD_DIR) "$(ISA_BUILD_DIR)/$(ISA_TEST).mem"
+	@$(MAKE) --no-print-directory vcs-run \
+		TEST=tb_baremetal \
+		VCS_PLUSARGS="+test=$(ISA_TEST) +mem=$(ISA_BUILD_DIR)/$(ISA_TEST).mem"
+
+vcs-isa-gui:
+	@case " $(ISA_PROGRAMS) " in \
+		*" $(ISA_TEST) "*) ;; \
+		*) echo "error: unknown ISA_TEST='$(ISA_TEST)'" >&2; exit 2 ;; \
+	esac
+	@$(MAKE) -C sw/isa BUILD_DIR=$(ISA_BUILD_DIR) "$(ISA_BUILD_DIR)/$(ISA_TEST).mem"
+	@$(MAKE) --no-print-directory vcs-gui \
+		TEST=tb_baremetal \
+		VCS_PLUSARGS="+test=$(ISA_TEST) +mem=$(ISA_BUILD_DIR)/$(ISA_TEST).mem"
+
+vcs-clean:
+	@$(RM) -r "$(VCS_BUILD_DIR)"
+
+$(BAREMETAL_SIM): $(tb_baremetal_SRCS) $(CORE_MANIFEST) Makefile | rtl-check-tools
+	@mkdir -p $(@D)
+	@echo "[BUILD] tb_baremetal"
+	+@$(VERILATOR) $(VERILATOR_TEST_FLAGS) \
+		--top-module tb_baremetal \
+		--Mdir $(@D) \
+		-o Vtb_baremetal \
+		$(tb_baremetal_SRCS)
+
+$(FREERTOS_SIM): $(tb_freertos_soc_SRCS) $(CORE_MANIFEST) Makefile | rtl-check-tools
+	@mkdir -p $(@D)
+	@echo "[BUILD] tb_freertos_soc"
+	+@$(VERILATOR) $(VERILATOR_TEST_FLAGS) \
+		--top-module tb_freertos_soc \
+		--Mdir $(@D) \
+		-o Vtb_freertos_soc \
+		$(tb_freertos_soc_SRCS)
+
+define BAREMETAL_template
+baremetal-$(1): software-images $(BAREMETAL_SIM)
+	@echo "[RUN]   baremetal-$(1)"
+	@$(BAREMETAL_SIM) \
+		+test=$(1) \
+		+mem=$(SOFTWARE_BUILD_DIR)/$(1).mem \
+		$(BAREMETAL_PLUSARGS)
+endef
+
+
+$(foreach program,$(BAREMETAL_PROGRAMS),$(eval $(call BAREMETAL_template,$(program))))
+
+# Delegate one image at a time to the ISA build system. This keeps named test
+# targets fast while allowing the top-level -j regression to build independent
+# assembly programs concurrently.
+$(ISA_BUILD_DIR)/rv32ui-%.mem: third_party/riscv-tests/isa/rv32ui/%.S $(ISA_IMAGE_COMMON_DEPS)
+	@$(MAKE) -C sw/isa BUILD_DIR=$(ISA_BUILD_DIR) $@
+
+$(ISA_BUILD_DIR)/rv32um-%.mem: third_party/riscv-tests/isa/rv32um/%.S $(ISA_IMAGE_COMMON_DEPS)
+	@$(MAKE) -C sw/isa BUILD_DIR=$(ISA_BUILD_DIR) $@
+
+define ISA_template
+isa-$(1): $(ISA_BUILD_DIR)/$(1).mem $(BAREMETAL_SIM)
+	@echo "[RUN]   isa-$(1)"
+	@$(if $(strip $(ISA_TRACE_DIR)),mkdir -p "$(ISA_TRACE_DIR)",:)
+	@$(BAREMETAL_SIM) \
+		+test=$(1) \
+		+mem=$(ISA_BUILD_DIR)/$(1).mem \
+		$(if $(strip $(ISA_TRACE_DIR)),+trace=$(ISA_TRACE_DIR)/$(1).csv) \
+		$(ISA_PLUSARGS)
+endef
+
+$(foreach program,$(ISA_PROGRAMS),$(eval $(call ISA_template,$(program))))
+
+# Each test has its own Verilator object directory. This prevents generated
+# model collisions and lets GNU make safely compile independent tests in
+# parallel. The executable target is cached until one of its RTL/TB inputs
+# changes; the phony test target always executes the resulting simulation.
+define TEST_template
+$(BUILD_DIR)/$(1)/V$(1): $$($(1)_SRCS) $$($(1)_BUILD_DEPS) Makefile | rtl-check-tools
+	@mkdir -p $$(@D)
+	@echo "[BUILD] $(1)"
+	+@$$(VERILATOR) $$(VERILATOR_TEST_FLAGS) \
+		--top-module $(1) \
+		--Mdir $$(@D) \
+		-o V$(1) \
+		$$($(1)_SRCS)
+
+$(1): $(BUILD_DIR)/$(1)/V$(1)
+	@echo "[RUN]   $(1)"
+	@$(BUILD_DIR)/$(1)/V$(1)
+endef
+
+$(foreach test,$(ALL_TESTS),$(eval $(call TEST_template,$(test))))

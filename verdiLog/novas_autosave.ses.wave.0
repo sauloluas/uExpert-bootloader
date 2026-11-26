@@ -1,0 +1,62 @@
+Magic 271485
+Revision Verdi_X-2025.06-SP2-2
+
+; Window Layout <x> <y> <width> <height> <signalwidth> <valuewidth>
+viewPort 0 11 1274 421 152 65
+
+; File list:
+; openDirFile [-d delimiter] [-s time_offset] [-rf auto_bus_rule_file] path_name file_name
+openDirFile -d / "" "/home/ciexpert/saulo.teipel/riscv-rv32im-core-main/inter.fsdb"
+
+; file time scale:
+; fileTimeScale ### s|ms|us|ns|ps
+
+; signal spacing:
+signalSpacing 5
+
+; windowTimeUnit is used for zoom, cursor & marker
+; waveform viewport range
+zoom 1230004.305159 1350951.855659
+cursor 425000.000000
+marker 0.000000
+
+; user define markers
+; userMarker time_pos marker_name color linestyle
+; visible top row signal index
+top 0
+; marker line index
+markerPos 3
+
+; event list
+; addEvent event_name event_expression
+; curEvent event_name
+
+
+
+COMPLEX_EVENT_BEGIN
+
+
+COMPLEX_EVENT_END
+
+
+
+; toolbar current search type
+; curSTATUS search_type
+curSTATUS ByChange
+
+
+addGroup "G1"
+activeDirFile "" "/home/ciexpert/saulo.teipel/riscv-rv32im-core-main/inter.fsdb"
+addSignal -h 16 /tb_baremetal/trace_rd_we
+addSignal -h 16 -UNSIGNED -HEX -holdScope trace_rd_data[31:0]
+addSignal -h 16 /tb_baremetal/dut/trace_taken_o
+addGroup "G2"
+
+; getSignalForm Scope Hierarchy Status
+; active file of getSignalForm
+
+
+; Save Toolbar Info
+; saveToolbar <toolbar_name> <visible> <extra_info>
+saveToolbar WAVE_MESSAGE INVISIBLE ""
+

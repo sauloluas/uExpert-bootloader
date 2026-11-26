@@ -1,0 +1,51 @@
+# tb_baremetal.rc - organização das ondas no Verdi
+# Rode com: source tb_baremetal.rc
+# Ou: verdi -ssf /tmp/.../tb_baremetal.fsdb -rc tb_baremetal.rc
+
+set win $_nWave1
+
+# -------------------- CLOCK / RESET --------------------
+wvAddGroup   -win $win "CLOCK / RESET"
+wvAddSignal  -win $win /tb_baremetal/clk
+wvAddSignal  -win $win /tb_baremetal/rst
+wvSetRadix   -win $win -format Binary {/tb_baremetal/clk /tb_baremetal/rst}
+
+# -------------------- PIPELINE --------------------
+wvAddGroup   -win $win "PIPELINE"
+wvAddSignal  -win $win /tb_baremetal/dut/if_id_q
+wvAddSignal  -win $win /tb_baremetal/dut/id_ex_q
+wvAddSignal  -win $win /tb_baremetal/dut/ex_mem_q
+wvAddSignal  -win $win /tb_baremetal/dut/mem_wb_q
+wvAddSignal  -win $win /tb_baremetal/dut/ex_wait
+wvAddSignal  -win $win /tb_baremetal/dut/mem_wait
+wvAddSignal  -win $win /tb_baremetal/dut/redirect_valid
+wvAddSignal  -win $win /tb_baremetal/dut/redirect_pc
+wvSetRadix   -win $win -format Hexadecimal {/tb_baremetal/dut/if_id_q /tb_baremetal/dut/id_ex_q /tb_baremetal/dut/ex_mem_q /tb_baremetal/dut/mem_wb_q /tb_baremetal/dut/redirect_pc}
+wvSetRadix   -win $win -format Binary {/tb_baremetal/dut/ex_wait /tb_baremetal/dut/mem_wait /tb_baremetal/dut/redirect_valid}
+
+# -------------------- ARCHITECTURAL RETIREMENT --------------------
+wvAddGroup   -win $win "ARCHITECTURAL RETIREMENT"
+wvAddSignal  -win $win /tb_baremetal/trace_valid
+wvAddSignal  -win $win /tb_baremetal/trace_pc
+wvAddSignal  -win $win /tb_baremetal/trace_insn
+wvAddSignal  -win $win /tb_baremetal/trace_rd_we
+wvAddSignal  -win $win /tb_baremetal/trace_rd_addr
+wvAddSignal  -win $win /tb_baremetal/trace_rd_data
+wvAddSignal  -win $win /tb_baremetal/trace_mem_addr
+wvAddSignal  -win $win /tb_baremetal/trace_mem_wstrb
+wvAddSignal  -win $win /tb_baremetal/trace_mem_wdata
+wvAddSignal  -win $win /tb_baremetal/trace_trap
+wvAddSignal  -win $win /tb_baremetal/trace_cause
+wvSetRadix   -win $win -format Binary {/tb_baremetal/trace_valid /tb_baremetal/trace_rd_we /tb_baremetal/trace_trap}
+wvSetRadix   -win $win -format Unsigned {/tb_baremetal/trace_rd_addr /tb_baremetal/trace_cause}
+wvSetRadix   -win $win -format Hexadecimal {/tb_baremetal/trace_pc /tb_baremetal/trace_insn /tb_baremetal/trace_rd_data /tb_baremetal/trace_mem_addr /tb_baremetal/trace_mem_wstrb /tb_baremetal/trace_mem_wdata}
+
+# -------------------- HARNESS STATUS --------------------
+wvAddGroup   -win $win "HARNESS STATUS"
+wvAddSignal  -win $win /tb_baremetal/cycles
+wvAddSignal  -win $win /tb_baremetal/trace_events
+wvAddSignal  -win $win /tb_baremetal/trap_count
+wvSetRadix   -win $win -format Unsigned {/tb_baremetal/cycles /tb_baremetal/trace_events /tb_baremetal/trap_count}
+
+# Posiciona os grupos na ordem em que foram criados
+wvSetPosition -win $win -top

@@ -1,0 +1,5 @@
+# Batch UCLI script: run the simulation to completion and exit.
+# No waveform is dumped here — capture lives in sim/vcs/waves/<TEST>.tcl.
+
+run
+quit -f

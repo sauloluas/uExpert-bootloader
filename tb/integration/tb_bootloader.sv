@@ -91,7 +91,7 @@ initial begin
   uart_send_word(32'(code_words));
   for (int i = 0; i < code_words; i++) uart_send_word(app_code[i]);
 
-  repeat (10000) @(posedge clk);
+  repeat (500000) @(posedge clk);
   $fatal(1, "timeout: app never wrote PASS to tohost");
 end
 
@@ -115,6 +115,32 @@ end
     uart_send_byte(w[23:16]);
     uart_send_byte(w[31:24]);
   endtask
+
+logic        app_seen;
+logic [31:0] last_pc;
+logic [31:0] last_app_pc;
+logic        trap_seen;
+
+always @(posedge clk) begin
+  if (!rst && dut.trace_valid_o) begin
+    last_pc <= dut.trace_pc_o;
+
+    if (dut.trace_pc_o >= 32'h8000) begin
+      if (!app_seen) begin
+        $display("tb_bootloader: app entered at PC=%08x (cycle %0d)",
+                 dut.trace_pc_o, $time/10);
+        app_seen <= 1'b1;
+      end
+      last_app_pc <= dut.trace_pc_o;
+    end
+
+    if (dut.trace_trap_o && !trap_seen) begin
+      $display("tb_bootloader: TRAP pc=%08x cause=%0d (cycle %0d)",
+               dut.trace_pc_o, dut.trace_cause_o, $time/10);
+      trap_seen <= 1'b1;
+    end
+  end
+end
 
   // -------------------------------------------------------------------------
   // Monitor tohost

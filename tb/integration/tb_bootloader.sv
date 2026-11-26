@@ -33,29 +33,66 @@ module tb_bootloader #(
   logic [31:0] app_words [0:1023];
   int unsigned num_words;
 
+localparam int unsigned APP_DATA_MAX_WORDS = 512;
+localparam int unsigned APP_CODE_MAX_WORDS = 2048;
+
+logic [31:0] app_data [0:APP_DATA_MAX_WORDS-1];
+logic [31:0] app_code [0:APP_CODE_MAX_WORDS-1];
+int unsigned data_words;
+int unsigned code_words;
+
 initial begin
-  string bootloader_mem;
-  string app_code_mem;
+  string bootloader_mem, app_data_mem, app_code_mem;
 
   if (!$value$plusargs("BOOTLOADER_MEM=%s", bootloader_mem))
     $fatal(1, "missing +BOOTLOADER_MEM=<path>");
+  if (!$value$plusargs("APP_DATA_MEM=%s", app_data_mem))
+    $fatal(1, "missing +APP_DATA_MEM=<path>");
   if (!$value$plusargs("APP_CODE_MEM=%s", app_code_mem))
     $fatal(1, "missing +APP_CODE_MEM=<path>");
 
   $display("tb_bootloader: bootloader=%s", bootloader_mem);
-  $display("tb_bootloader: app=%s", app_code_mem);
+  $display("tb_bootloader: app_data=%s",   app_data_mem);
+  $display("tb_bootloader: app_code=%s",   app_code_mem);
 
   for (int i = 0; i < TCM_BYTES/4; i++) dut.u_tcm.mem[i] = 32'b0;
   $readmemh(bootloader_mem, dut.u_tcm.mem);
 
-  for (int i = 0; i < 1024; i++) app_words[i] = 32'hxxxx_xxxx;
-  $readmemh(app_code_mem, app_words);
+  for (int i = 0; i < APP_DATA_MAX_WORDS; i++) app_data[i] = 32'hxxxx_xxxx;
+  $readmemh(app_data_mem, app_data);
+  data_words = 0;
+  for (int i = 0; i < APP_DATA_MAX_WORDS; i++)
+    if (app_data[i] !== 32'hxxxx_xxxx) data_words = i + 1;
 
-  num_words = 0;
-  for (int i = 0; i < 1024; i++)
-    if (app_words[i] !== 32'hxxxx_xxxx) num_words = i + 1;
-  if (num_words == 0) $fatal(1, "empty app image");
-  $display("tb_bootloader: app code = %0d words", num_words);
+  for (int i = 0; i < APP_CODE_MAX_WORDS; i++) app_code[i] = 32'hxxxx_xxxx;
+  $readmemh(app_code_mem, app_code);
+  code_words = 0;
+  for (int i = 0; i < APP_CODE_MAX_WORDS; i++)
+    if (app_code[i] !== 32'hxxxx_xxxx) code_words = i + 1;
+
+  if (code_words == 0) $fatal(1, "empty app code image");
+  $display("tb_bootloader: data=%0d words, code=%0d words",
+           data_words, code_words);
+end
+
+initial begin
+  clk     = 1'b0;
+  rst     = 1'b1;
+  uart_rx = 1'b1;
+
+  repeat (4) @(posedge clk);
+  rst = 1'b0;
+  repeat (500) @(posedge clk);
+
+  $display("tb_bootloader: sending protocol");
+
+  uart_send_word(32'(data_words));
+  for (int i = 0; i < data_words; i++) uart_send_word(app_data[i]);
+  uart_send_word(32'(code_words));
+  for (int i = 0; i < code_words; i++) uart_send_word(app_code[i]);
+
+  repeat (10000) @(posedge clk);
+  $fatal(1, "timeout: app never wrote PASS to tohost");
 end
 
   // -------------------------------------------------------------------------
@@ -78,29 +115,6 @@ end
     uart_send_byte(w[23:16]);
     uart_send_byte(w[31:24]);
   endtask
-
-  // -------------------------------------------------------------------------
-  // Driver: reset, wait for bootloader to reach the polling loop, then send
-  // the protocol: [data_words=0][code_words][code words...]
-  // -------------------------------------------------------------------------
-  initial begin
-    clk     = 1'b0;
-    rst     = 1'b1;
-    uart_rx = 1'b1;   // idle high
-
-    repeat (4) @(posedge clk);
-    rst = 1'b0;
-    repeat (500) @(posedge clk);   // let crt0 + bootloader reach while(1)
-
-    $display("tb_bootloader: sending protocol (data=0, code=%0d words)", num_words);
-    uart_send_word(32'd0);            // data_words = 0
-    uart_send_word(32'(num_words));   // code_words
-    for (int i = 0; i < num_words; i++) uart_send_word(app_words[i]);
-
-    // Allow the last word to commit + the jump + the app to run.
-    repeat (1000) @(posedge clk);
-    $fatal(1, "timeout: app never wrote PASS to tohost");
-  end
 
   // -------------------------------------------------------------------------
   // Monitor tohost

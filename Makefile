@@ -666,10 +666,10 @@ vcs-baremetal-gui: software-images
 		VCS_PLUSARGS="+test=$(PROGRAM) +mem=$(SOFTWARE_BUILD_DIR)/$(PROGRAM).mem"
 
 vcs-bootloader: bootloader-images
-	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) minimal-app-images
+	@$(MAKE) -C sw BUILD_DIR=$(SOFTWARE_BUILD_DIR) app-test-images
 	@$(MAKE) --no-print-directory vcs-run \
 		TEST=tb_bootloader \
-		VCS_PLUSARGS="+BOOTLOADER_MEM=$(SOFTWARE_BUILD_DIR)/bootloader.mem +APP_CODE_MEM=$(SOFTWARE_BUILD_DIR)/minimal_app.mem"
+		VCS_PLUSARGS="+BOOTLOADER_MEM=$(SOFTWARE_BUILD_DIR)/bootloader.mem +APP_DATA_MEM=$(SOFTWARE_BUILD_DIR)/app_test_data.mem +APP_CODE_MEM=$(SOFTWARE_BUILD_DIR)/app_test_code.mem"
 
 vcs-freertos-run: freertos-images
 	@$(MAKE) --no-print-directory vcs-run \

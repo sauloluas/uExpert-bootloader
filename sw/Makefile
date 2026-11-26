@@ -126,7 +126,7 @@ DISASSEMBLIES := $(addprefix $(BUILD_DIR)/,$(addsuffix .dump,$(PROGRAMS)))
 
 .DEFAULT_GOAL := all
 
-.PHONY: all images baremetal-images bootloader-images \
+.PHONY: all images baremetal-images bootloader-images app-test-images \
 	freertos-check freertos-images \
 	coremark-check coremark-images coremark-force check-tools list clean
 
@@ -298,35 +298,52 @@ $(BUILD_DIR)/bootloader.dump: $(BUILD_DIR)/bootloader.elf
 bootloader-images: $(BUILD_DIR)/bootloader.mem $(BUILD_DIR)/bootloader.dump
 
 # ---------------------------------------------------------------------------
-# Minimal app used by tb_bootloader.sv. Not a bare-metal test: it is
-# received via UART by the bootloader, so it is built separately.
+# Test application received via UART by the bootloader.
+# Two images are produced: a .data blob (loaded at APP_DATA_BASE) and a
+# .text/.rodata blob (loaded at APP_CODE_BASE), matching the protocol used
+# by bootloader.c.
 # ---------------------------------------------------------------------------
-MINIMAL_APP_SRC := bootloader/minimal_app.S
-MINIMAL_APP_OBJ := $(BUILD_DIR)/bootloader/minimal_app.o
+APP_SRC := bootloader/app_test.c
+APP_OBJ := $(BUILD_DIR)/bootloader/app_test.o
 
-$(BUILD_DIR)/bootloader/minimal_app.o: $(MINIMAL_APP_SRC) | check-tools
+$(BUILD_DIR)/bootloader/app_test.o: $(APP_SRC) include/rv32_soc.h | check-tools
 	@mkdir -p $(@D)
-	@echo "[AS]    $<"
-	@$(CC) $(CPPFLAGS) $(ASFLAGS) -c $< -o $@
+	@echo "[CC]    $<"
+	@$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD_DIR)/minimal_app.elf: $(MINIMAL_APP_OBJ) link_app.ld | check-tools
-	@echo "[LINK]  minimal_app"
-	@$(CC) -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles -static \
-		-T link_app.ld -Wl,--build-id=none -o $@ $(MINIMAL_APP_OBJ)
+$(BUILD_DIR)/app_test.elf: $(COMMON_OBJECTS) $(APP_OBJ) link_app.ld | check-tools
+	@mkdir -p $(@D)
+	@echo "[LINK]  app_test"
+	@$(CC) -march=$(ARCH) -mabi=$(ABI) -mno-relax -nostdlib -nostartfiles -static \
+		-T link_app.ld -Wl,--build-id=none -Wl,--gc-sections \
+		-Wl,-Map,$(BUILD_DIR)/app_test.map -o $@ \
+		$(COMMON_OBJECTS) $(APP_OBJ)
 	@$(READELF) -h $@ | grep -q 'Class:[[:space:]]*ELF32' || { \
-		echo "error: minimal_app is not ELF32" >&2; exit 1; \
+		echo "error: app_test is not ELF32" >&2; exit 1; \
 	}
 
-$(BUILD_DIR)/minimal_app.bin: $(BUILD_DIR)/minimal_app.elf
-	@echo "[BIN]   minimal_app"
-	@$(OBJCOPY) -O binary $< $@
+$(BUILD_DIR)/app_test_data.bin: $(BUILD_DIR)/app_test.elf
+	@echo "[BIN]   app_test (data)"
+	@$(OBJCOPY) -O binary --only-section=.data $< $@
 
-$(BUILD_DIR)/minimal_app.mem: $(BUILD_DIR)/minimal_app.bin ../tools/bin_to_memh.py
-	@SIZE=$$(stat -c%s $<); \
-	echo "[MEMH]  minimal_app ($$SIZE bytes)"; \
+$(BUILD_DIR)/app_test_code.bin: $(BUILD_DIR)/app_test.elf
+	@echo "[BIN]   app_test (code)"
+	@$(OBJCOPY) -O binary \
+		--only-section=.init --only-section=.trap \
+		--only-section=.text --only-section=.rodata \
+		$< $@
+
+$(BUILD_DIR)/app_test_data.mem: $(BUILD_DIR)/app_test_data.bin ../tools/bin_to_memh.py
+	@SIZE=$$(stat -c%s $<); [ "$$SIZE" -gt 0 ] || SIZE=4; \
+	echo "[MEMH]  app_test_data ($$SIZE bytes)"; \
 	$(PYTHON) ../tools/bin_to_memh.py --input $< --output $@ --size $$SIZE
 
-minimal-app-images: $(BUILD_DIR)/minimal_app.mem
+$(BUILD_DIR)/app_test_code.mem: $(BUILD_DIR)/app_test_code.bin ../tools/bin_to_memh.py
+	@SIZE=$$(stat -c%s $<); \
+	echo "[MEMH]  app_test_code ($$SIZE bytes)"; \
+	$(PYTHON) ../tools/bin_to_memh.py --input $< --output $@ --size $$SIZE
+
+app-test-images: $(BUILD_DIR)/app_test_data.mem $(BUILD_DIR)/app_test_code.mem
 
 # Compile the five upstream sources and the platform port with one identical
 # flag set, as required by the CoreMark run and reporting rules. Runtime/startup
